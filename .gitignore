@@ -18,6 +18,8 @@ output/
 config/cfg.yml
 config/cfg.local.yml
 data/portfolio.csv
+data/trades.csv
+data/snapshots.jsonl
 
 # Streamlit cache
 .streamlit/

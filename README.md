@@ -3,11 +3,13 @@
 一个本地运行的 A 股持仓诊断工具，主链路包含：
 
 1. 持仓读取与维护
-2. 行情与资金流抓取
-3. 规则引擎诊断
-4. LLM 补充解读
-5. 报告落盘与通知发送
-6. Streamlit 可视化面板
+2. 交易记录落地
+3. 行情与资金流抓取
+4. 规则引擎诊断
+5. LLM 补充解读
+6. 历史快照对比
+7. 报告落盘与通知发送
+8. Streamlit 可视化面板
 
 ## 启动方式
 
@@ -23,10 +25,36 @@ python3 main.py
 python3 main.py --mode report
 ```
 
+指定阶段执行：
+
+```bash
+python3 main.py --mode report --session pre_open
+python3 main.py --mode report --session intraday
+python3 main.py --mode report --session post_close
+```
+
 如果不希望调用 LLM：
 
 ```bash
 python3 main.py --mode report --no-llm
+```
+
+输出今天的计划任务：
+
+```bash
+python3 main.py --mode schedule-plan
+```
+
+按计划轮询运行：
+
+```bash
+python3 main.py --mode schedule --check-interval 60 --notify
+```
+
+记录一笔交易：
+
+```bash
+python3 main.py --mode record-trade --symbol 600000 --side buy --quantity 100 --price 10.52 --note "盘中试仓"
 ```
 
 ## 本地私密配置
@@ -59,6 +87,7 @@ source ~/.zshrc
 
 1. [config/cfg.example.yml](/home/lv/Burget/config/cfg.example.yml)
 2. [data/portfolio.example.csv](/home/lv/Burget/data/portfolio.example.csv)
+3. [data/trades.example.csv](/home/lv/Burget/data/trades.example.csv)
 
 ## 测试
 

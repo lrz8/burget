@@ -79,6 +79,33 @@ def main():
         flow_fetcher=lambda: {"主力净流入": 28.6, "超大单净流入": 12.3},
         analyzer_cls=FakeAnalyzer,
         notifier_cls=FakeNotifier,
+        trade_loader=lambda: pd.DataFrame(
+            [
+                {
+                    "timestamp": "2026-03-18 10:00:00",
+                    "symbol": "159001",
+                    "name": "测试ETF",
+                    "side": "buy",
+                    "quantity": 300,
+                    "price": 1.02,
+                    "amount": 306.0,
+                    "note": "盘中补仓",
+                }
+            ]
+        ),
+        snapshot_loader=lambda limit=20: [
+            {
+                "timestamp": "2026-03-18 14:30:00",
+                "session_type": "intraday",
+                "totals": {"total_pnl": -200.0},
+                "positions": [
+                    {"symbol": "600001", "name": "测试股A", "action": "持仓观望"},
+                    {"symbol": "600002", "name": "测试股B", "action": "割肉止损"},
+                    {"symbol": "159001", "name": "测试ETF", "action": "持仓观望"},
+                ],
+            }
+        ],
+        snapshot_saver=lambda snapshot: None,
     )
 
     result = service.run(
@@ -86,6 +113,7 @@ def main():
         use_llm=True,
         send_notification=False,
         save_report=True,
+        session_type="post_close",
     )
     print(f"REPORT_PATH={result['report_path']}")
     print(result["report_content"])

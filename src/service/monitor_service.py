@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
@@ -8,12 +9,25 @@ from src.analyzer.report_builder import build_markdown_report
 from src.analyzer.strategy_engine import build_analysis_result
 from src.config.loader import load_config
 from src.data.portfolio_manager import load_portfolio, normalize_portfolio
+from src.data.snapshot_manager import (
+    append_snapshot,
+    build_snapshot_payload,
+    load_snapshots,
+    summarize_snapshot_history,
+)
+from src.data.trade_manager import (
+    build_trade_context,
+    get_recent_trades,
+    load_trade_log,
+    summarize_recent_trades,
+)
 from src.fetcher.market_data import (
     get_market_money_flow,
     get_market_summary,
     get_stock_data,
 )
 from src.notifier.dispatcher import NotifierDispatcher
+from src.service.session_planner import resolve_session_type
 from src.utils.runtime import save_markdown_report
 
 
@@ -31,6 +45,9 @@ class MonitorService:
         flow_fetcher: Callable[[], Dict[str, Any]] = get_market_money_flow,
         analyzer_cls: type[LLMAnalyzer] = LLMAnalyzer,
         notifier_cls: type[NotifierDispatcher] = NotifierDispatcher,
+        trade_loader: Callable[[], pd.DataFrame] = load_trade_log,
+        snapshot_loader: Callable[..., list[Dict[str, Any]]] = load_snapshots,
+        snapshot_saver: Callable[..., None] = append_snapshot,
     ):
         self.config_path = config_path
         self.market_fetcher = market_fetcher
@@ -38,6 +55,9 @@ class MonitorService:
         self.flow_fetcher = flow_fetcher
         self.analyzer_cls = analyzer_cls
         self.notifier_cls = notifier_cls
+        self.trade_loader = trade_loader
+        self.snapshot_loader = snapshot_loader
+        self.snapshot_saver = snapshot_saver
 
     def run(
         self,
@@ -45,16 +65,34 @@ class MonitorService:
         use_llm: bool = True,
         send_notification: bool = False,
         save_report: bool = True,
+        session_type: str = "auto",
+        now: Optional[datetime] = None,
+        trade_df: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
+        current_time = now or datetime.now()
+        resolved_session = resolve_session_type(current_time) if session_type == "auto" else session_type
         config = load_config(self.config_path)
         portfolio = normalize_portfolio(portfolio_df) if portfolio_df is not None else load_portfolio()
+        trade_log = trade_df if trade_df is not None else self.trade_loader()
+        recent_trade_df = get_recent_trades(trade_log, now=current_time)
+        recent_trades = summarize_recent_trades(recent_trade_df)
+        trade_context = build_trade_context(recent_trade_df)
+        snapshots = self.snapshot_loader(limit=20)
 
-        logger.info("开始执行主流程，持仓数=%s", len(portfolio))
+        logger.info("开始执行主流程，session=%s, 持仓数=%s", resolved_session, len(portfolio))
         market_data = self.market_fetcher()
         stock_data = self.stock_fetcher(portfolio) if not portfolio.empty else {}
         fund_flow = self.flow_fetcher()
 
-        analysis = build_analysis_result(market_data, stock_data, fund_flow)
+        analysis = build_analysis_result(
+            market_data,
+            stock_data,
+            fund_flow,
+            session_type=resolved_session,
+            trade_context=trade_context,
+            snapshots=snapshots,
+        )
+        history_summary = summarize_snapshot_history(snapshots, analysis)
         llm_commentary = self._generate_llm_commentary(
             config, market_data, stock_data, fund_flow, analysis, use_llm
         )
@@ -64,26 +102,42 @@ class MonitorService:
             fund_flow=fund_flow,
             analysis=analysis,
             llm_commentary=llm_commentary,
+            session_type=resolved_session,
+            history_summary=history_summary,
+            recent_trades=recent_trades,
         )
 
         report_path = save_markdown_report(report_content) if save_report else None
+        snapshot = build_snapshot_payload(
+            session_type=resolved_session,
+            market_data=market_data,
+            stock_data=stock_data,
+            analysis=analysis,
+            recent_trades=recent_trades,
+            timestamp=current_time,
+        )
+        self.snapshot_saver(snapshot)
         if send_notification and report_content:
             notifier = self.notifier_cls(config)
-            notifier.notify_all("AI 盯盘助手策略诊断", report_content)
+            notifier.notify_all(f"AI 盯盘助手 {resolved_session} 诊断", report_content)
 
         result = {
             "config": config,
             "portfolio": portfolio,
+            "session_type": resolved_session,
             "market_data": market_data,
             "stock_data": stock_data,
             "fund_flow": fund_flow,
+            "recent_trades": recent_trades,
+            "history_summary": history_summary,
             "analysis": analysis,
             "llm_commentary": llm_commentary,
             "report_content": report_content,
             "report_path": report_path,
         }
         logger.info(
-            "主流程完成: stocks=%s, report_saved=%s",
+            "主流程完成: session=%s, stocks=%s, report_saved=%s",
+            resolved_session,
             len(stock_data),
             bool(report_path),
         )

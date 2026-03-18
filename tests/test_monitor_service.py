@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 import pandas as pd
 
@@ -61,6 +62,32 @@ class MonitorServiceTest(unittest.TestCase):
             flow_fetcher=lambda: {"主力净流入": 30.0},
             analyzer_cls=FakeAnalyzer,
             notifier_cls=FakeNotifier,
+            trade_loader=lambda: pd.DataFrame(
+                [
+                    {
+                        "timestamp": "2026-03-18 09:35:00",
+                        "symbol": "600002",
+                        "name": "测试股B",
+                        "side": "buy",
+                        "quantity": 100,
+                        "price": 9.6,
+                        "amount": 960,
+                        "note": "补仓",
+                    }
+                ]
+            ),
+            snapshot_loader=lambda limit=20: [
+                {
+                    "timestamp": "2026-03-18 09:00:00",
+                    "session_type": "pre_open",
+                    "totals": {"total_pnl": 10},
+                    "positions": [
+                        {"symbol": "600001", "action": "持仓观望"},
+                        {"symbol": "600002", "action": "逢低加仓"},
+                    ],
+                }
+            ],
+            snapshot_saver=lambda snapshot: None,
         )
 
         result = service.run(
@@ -68,13 +95,17 @@ class MonitorServiceTest(unittest.TestCase):
             use_llm=True,
             send_notification=False,
             save_report=False,
+            session_type="intraday",
+            now=datetime(2026, 3, 18, 10, 0, 0),
         )
 
         self.assertIn("A股持仓诊断报告", result["report_content"])
         self.assertIn("600001", result["report_content"])
         self.assertIn("清仓止盈", result["report_content"])
-        self.assertIn("割肉止损", result["report_content"])
+        self.assertIn("持仓观望", result["report_content"])
         self.assertIn("### 市场补充观察", result["report_content"])
+        self.assertIn("历史与交易记录", result["report_content"])
+        self.assertEqual(result["session_type"], "intraday")
         self.assertIsNone(result["report_path"])
 
 

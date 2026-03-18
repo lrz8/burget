@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -48,11 +48,19 @@ def analyze_market(market_data: Dict[str, Any], fund_flow: Dict[str, Any]) -> Di
 
 
 def analyze_positions(
-    stock_data: Dict[str, Any], market_analysis: Dict[str, Any]
+    stock_data: Dict[str, Any],
+    market_analysis: Dict[str, Any],
+    session_type: str = "intraday",
+    trade_context: Optional[Dict[str, Dict[str, str]]] = None,
+    previous_snapshot: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """根据持仓盈亏与当日涨跌幅生成结构化建议。"""
     analyses: List[Dict[str, Any]] = []
     market_bias = market_analysis.get("bias", "震荡")
+    previous_actions = {
+        item.get("symbol"): item.get("action")
+        for item in (previous_snapshot or {}).get("positions", [])
+    }
 
     for symbol, info in stock_data.items():
         pnl_pct = float(info.get("盈亏比例(%)", 0.0))
@@ -67,7 +75,15 @@ def analyze_positions(
             day_pct=day_pct,
             market_bias=market_bias,
             holding_value=holding_value,
+            session_type=session_type,
+            trade_context=(trade_context or {}).get(symbol, {}),
         )
+        previous_action = previous_actions.get(symbol, "")
+        if previous_action and previous_action != action:
+            reasons.append(f"上一条快照建议为“{previous_action}”，当前已切换为“{action}”。")
+            confidence = "medium" if confidence == "low" else confidence
+        elif previous_action:
+            reasons.append(f"与上一条快照相比，建议维持“{action}”。")
 
         analyses.append(
             {
@@ -92,10 +108,22 @@ def analyze_positions(
 
 
 def build_analysis_result(
-    market_data: Dict[str, Any], stock_data: Dict[str, Any], fund_flow: Dict[str, Any]
+    market_data: Dict[str, Any],
+    stock_data: Dict[str, Any],
+    fund_flow: Dict[str, Any],
+    session_type: str = "intraday",
+    trade_context: Optional[Dict[str, Dict[str, str]]] = None,
+    snapshots: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     market_analysis = analyze_market(market_data, fund_flow)
-    position_analysis = analyze_positions(stock_data, market_analysis)
+    previous_snapshot = snapshots[-1] if snapshots else None
+    position_analysis = analyze_positions(
+        stock_data,
+        market_analysis,
+        session_type=session_type,
+        trade_context=trade_context,
+        previous_snapshot=previous_snapshot,
+    )
     totals = _summarize_positions(position_analysis)
     return {
         "market": market_analysis,
@@ -105,9 +133,15 @@ def build_analysis_result(
 
 
 def _decide_action(
-    pnl_pct: float, day_pct: float, market_bias: str, holding_value: float
+    pnl_pct: float,
+    day_pct: float,
+    market_bias: str,
+    holding_value: float,
+    session_type: str,
+    trade_context: Optional[Dict[str, str]],
 ) -> tuple[str, List[str], str]:
     reasons: List[str] = []
+    trade_context = trade_context or {}
 
     if holding_value <= 0:
         return "持仓观望", ["当前持仓市值为 0，暂无实际仓位需要处理。"], "low"
@@ -140,12 +174,28 @@ def _decide_action(
         action = "做T（低吸高抛）"
         reasons.append(f"当前仍亏损 {pnl_pct:.2f}%，但当日反弹 {day_pct:.2f}%。")
         reasons.append("先利用反弹降低持仓成本，比直接追价加仓更稳。")
-        return action, reasons, "medium"
+        action, reasons, confidence = action, reasons, "medium"
+    else:
+        action = "持仓观望"
+        reasons.append(f"当前总盈亏 {pnl_pct:.2f}%，当日涨跌幅 {day_pct:.2f}%。")
+        reasons.append("现有数据不足以支撑更激进动作，先观察更合适。")
+        confidence = "low"
 
-    action = "持仓观望"
-    reasons.append(f"当前总盈亏 {pnl_pct:.2f}%，当日涨跌幅 {day_pct:.2f}%。")
-    reasons.append("现有数据不足以支撑更激进动作，先观察更合适。")
-    return action, reasons, "low"
+    last_side = trade_context.get("last_side", "")
+    last_timestamp = trade_context.get("last_timestamp", "")
+    if last_side == "buy" and action == "逢低加仓":
+        action = "持仓观望"
+        reasons.append(f"最近一次记录交易为买入（{last_timestamp}），避免短周期内连续加仓。")
+        confidence = "medium"
+    elif last_side == "sell" and action == "清仓止盈":
+        reasons.append(f"最近一次记录交易为卖出（{last_timestamp}），若已部分兑现可分批处理剩余仓位。")
+
+    if session_type == "pre_open":
+        reasons.append("当前属于盘前预判，执行上更适合等待开盘后再确认。")
+    elif session_type == "post_close":
+        reasons.append("当前属于盘后总结，该动作更适合作为下一交易日预案。")
+
+    return action, reasons, confidence
 
 
 def _summarize_positions(position_analysis: List[Dict[str, Any]]) -> Dict[str, Any]:

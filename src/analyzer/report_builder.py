@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def build_markdown_report(
@@ -8,20 +8,27 @@ def build_markdown_report(
     fund_flow: Dict[str, Any],
     analysis: Dict[str, Any],
     llm_commentary: str = "",
+    session_type: str = "intraday",
+    history_summary: Optional[Dict[str, Any]] = None,
+    recent_trades: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """组合结构化诊断结果，生成稳定可读的 Markdown 报告。"""
-    market_section = _render_market_section(market_data, fund_flow, analysis["market"])
+    market_section = _render_market_section(market_data, fund_flow, analysis["market"], session_type)
     positions_section = _render_positions_section(analysis["positions"], analysis["totals"])
+    history_section = _render_history_section(history_summary or {}, recent_trades or [])
     llm_section = _render_llm_section(llm_commentary)
     risk_section = _render_risk_section(stock_data)
 
     sections = [
         f"# A股持仓诊断报告",
         f"**生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}**",
+        f"**运行阶段：{_session_label(session_type)}**",
         "",
         market_section,
         "",
         positions_section,
+        "",
+        history_section,
         "",
         llm_section,
         "",
@@ -31,10 +38,14 @@ def build_markdown_report(
 
 
 def _render_market_section(
-    market_data: Dict[str, Any], fund_flow: Dict[str, Any], market_analysis: Dict[str, Any]
+    market_data: Dict[str, Any],
+    fund_flow: Dict[str, Any],
+    market_analysis: Dict[str, Any],
+    session_type: str,
 ) -> str:
     lines = [
         "## 市场概览",
+        f"- 阶段说明：{_session_hint(session_type)}",
         f"- 市场判断：**{market_analysis.get('bias', '数据不足')}**",
         f"- 核心结论：{market_analysis.get('summary', '暂无结论')}",
     ]
@@ -95,6 +106,26 @@ def _render_llm_section(llm_commentary: str) -> str:
     return "\n".join(lines)
 
 
+def _render_history_section(history_summary: Dict[str, Any], recent_trades: List[Dict[str, str]]) -> str:
+    lines = ["## 历史与交易记录"]
+    if history_summary:
+        lines.append(f"- 历史快照对比：{history_summary.get('summary', '暂无历史快照结论。')}")
+    else:
+        lines.append("- 历史快照对比：暂无。")
+
+    if recent_trades:
+        lines.append("- 最近交易：")
+        for item in recent_trades[:5]:
+            side_label = "买入" if item.get("side") == "buy" else "卖出"
+            lines.append(
+                f"  - {item.get('timestamp', '')} {item.get('symbol', '')} {item.get('name', '')} "
+                f"{side_label} {item.get('quantity', '')} 股，价格 {item.get('price', '')}。"
+            )
+    else:
+        lines.append("- 最近交易：暂无。")
+    return "\n".join(lines)
+
+
 def _render_risk_section(stock_data: Dict[str, Any]) -> str:
     lines = [
         "## 风险提示",
@@ -104,3 +135,23 @@ def _render_risk_section(stock_data: Dict[str, Any]) -> str:
     if not stock_data:
         lines.append("- 本次未抓到有效持仓行情，结论可信度有限。")
     return "\n".join(lines)
+
+
+def _session_label(session_type: str) -> str:
+    return {
+        "pre_open": "盘前预判",
+        "intraday": "盘中跟踪",
+        "post_close": "盘后总结",
+        "midday_break": "午间观察",
+        "off_hours": "非交易时段",
+    }.get(session_type, session_type)
+
+
+def _session_hint(session_type: str) -> str:
+    return {
+        "pre_open": "基于开盘前可获得的上一交易日与最新资金数据，生成盘前预判。",
+        "intraday": "基于当前轮次抓取结果，生成盘中跟踪建议。",
+        "post_close": "基于收盘后数据和交易记录，生成盘后总结与次日预案。",
+        "midday_break": "当前属于午间休市阶段，可用于回顾上午走势。",
+        "off_hours": "当前处于非交易时段，结果更适合作为观察记录。",
+    }.get(session_type, "按当前数据生成诊断。")

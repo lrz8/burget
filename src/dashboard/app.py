@@ -11,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from src.fetcher.market_data import get_stock_history_kline
 from src.data.portfolio_manager import load_portfolio, normalize_portfolio, save_portfolio
+from src.data.trade_manager import load_trade_log, record_trade
 from src.service.monitor_service import MonitorService
 from src.utils.runtime import setup_logging
 
@@ -65,6 +66,36 @@ def main():
         st.markdown("---")
         st.info("💡 提示：点击主界面的【生成策略诊断】按钮获取基于当前数据的 LLM 建议。")
 
+        st.markdown("---")
+        st.header("📝 交易记录")
+        with st.form("trade_record_form"):
+            trade_symbol = st.text_input("代码", max_chars=6)
+            trade_name = st.text_input("名称", value="")
+            trade_side = st.selectbox(
+                "方向",
+                options=["buy", "sell"],
+                format_func=lambda value: "买入" if value == "buy" else "卖出",
+            )
+            trade_quantity = st.number_input("数量", min_value=1, step=100, value=100)
+            trade_price = st.number_input("成交价", min_value=0.0, step=0.001, format="%.3f")
+            trade_note = st.text_input("备注", value="")
+            submit_trade = st.form_submit_button("保存交易记录")
+
+        if submit_trade and trade_symbol.strip():
+            record_trade(
+                symbol=trade_symbol.strip(),
+                name=trade_name.strip(),
+                side=trade_side,
+                quantity=int(trade_quantity),
+                price=float(trade_price),
+                note=trade_note.strip(),
+            )
+            st.success("✅ 交易记录已保存。")
+
+        recent_trade_df = load_trade_log().sort_values("timestamp", ascending=False).head(5)
+        if not recent_trade_df.empty:
+            st.dataframe(recent_trade_df, use_container_width=True, hide_index=True)
+
     analysis_result = None
     with st.spinner("正在刷新市场与持仓数据..."):
         analysis_result = service.run(
@@ -77,9 +108,13 @@ def main():
     market_data = analysis_result["market_data"]
     stock_data = analysis_result["stock_data"]
     strategy_analysis = analysis_result["analysis"]
+    session_type = analysis_result["session_type"]
+    recent_trades = analysis_result["recent_trades"]
+    history_summary = analysis_result["history_summary"]
 
     # --- 顶栏：大盘概览 ---
     st.header("📊 市场概览")
+    st.caption(f"当前阶段：{session_type}")
     if market_data:
         cols = st.columns(len(market_data))
         for idx, (name, data) in enumerate(market_data.items()):
@@ -136,6 +171,14 @@ def main():
                 }
             )
         st.dataframe(pd.DataFrame(strategy_rows), use_container_width=True, hide_index=True)
+
+        if history_summary:
+            st.subheader("🕓 历史变化")
+            st.write(history_summary.get("summary", "暂无历史快照结论。"))
+
+        if recent_trades:
+            st.subheader("🧾 最近交易")
+            st.dataframe(pd.DataFrame(recent_trades), use_container_width=True, hide_index=True)
 
         st.subheader("📉 近期走势 (30日 K线)")
         chart_cols = st.columns(2)
