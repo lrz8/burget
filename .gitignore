@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local runtime artifacts
+logs/
+output/
+
+# Local private configuration
+.env
+config/cfg.yml
+config/cfg.local.yml
+data/portfolio.csv
+
+# Streamlit cache
+.streamlit/
