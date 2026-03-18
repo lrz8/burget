@@ -29,6 +29,7 @@ class MonitorServiceTest(unittest.TestCase):
             [
                 {"symbol": "600001", "name": "测试股A", "holdings": 100, "buy_price": 10.0},
                 {"symbol": "600002", "name": "测试股B", "holdings": 100, "buy_price": 11.0},
+                {"symbol": "600003", "name": "测试股C", "holdings": 50, "buy_price": 8.0},
             ]
         )
 
@@ -37,7 +38,7 @@ class MonitorServiceTest(unittest.TestCase):
             market_fetcher=lambda: {
                 "上证指数": {"最新价": 3300, "涨跌额": 12, "涨跌幅(%)": 0.36}
             },
-            stock_fetcher=lambda _: {
+            stock_fetcher=lambda effective_portfolio: {
                 "600001": {
                     "名称": "测试股A",
                     "类型": "股票",
@@ -52,11 +53,46 @@ class MonitorServiceTest(unittest.TestCase):
                     "名称": "测试股B",
                     "类型": "股票",
                     "最新价": 9.5,
-                    "持仓成本价": 11.0,
+                    "持仓成本价": float(
+                        effective_portfolio.loc[effective_portfolio["symbol"] == "600002", "buy_price"].iloc[0]
+                    ),
                     "涨跌幅(%)": -1.2,
-                    "持仓市值(元)": 950,
-                    "浮动盈亏(元)": -150,
-                    "盈亏比例(%)": -13.64,
+                    "持仓市值(元)": float(
+                        9.5 * effective_portfolio.loc[effective_portfolio["symbol"] == "600002", "holdings"].iloc[0]
+                    ),
+                    "浮动盈亏(元)": round(
+                        (
+                            9.5
+                            - float(
+                                effective_portfolio.loc[
+                                    effective_portfolio["symbol"] == "600002", "buy_price"
+                                ].iloc[0]
+                            )
+                        )
+                        * float(
+                            effective_portfolio.loc[effective_portfolio["symbol"] == "600002", "holdings"].iloc[0]
+                        ),
+                        2,
+                    ),
+                    "盈亏比例(%)": round(
+                        (
+                            (
+                                9.5
+                                - float(
+                                    effective_portfolio.loc[
+                                        effective_portfolio["symbol"] == "600002", "buy_price"
+                                    ].iloc[0]
+                                )
+                            )
+                            / float(
+                                effective_portfolio.loc[
+                                    effective_portfolio["symbol"] == "600002", "buy_price"
+                                ].iloc[0]
+                            )
+                        )
+                        * 100,
+                        2,
+                    ),
                 },
             },
             flow_fetcher=lambda: {"主力净流入": 30.0},
@@ -73,6 +109,16 @@ class MonitorServiceTest(unittest.TestCase):
                         "price": 9.6,
                         "amount": 960,
                         "note": "补仓",
+                    },
+                    {
+                        "timestamp": "2026-03-18 09:40:00",
+                        "symbol": "600002",
+                        "name": "测试股B",
+                        "side": "buy",
+                        "quantity": 100,
+                        "price": 9.8,
+                        "amount": 980,
+                        "note": "继续加仓",
                     }
                 ]
             ),
@@ -106,7 +152,50 @@ class MonitorServiceTest(unittest.TestCase):
         self.assertIn("### 市场补充观察", result["report_content"])
         self.assertIn("历史与交易记录", result["report_content"])
         self.assertEqual(result["session_type"], "intraday")
+        self.assertEqual(
+            int(result["portfolio"].loc[result["portfolio"]["symbol"] == "600002", "holdings"].iloc[0]),
+            200,
+        )
+        self.assertNotIn("600003", result["stock_data"])
         self.assertIsNone(result["report_path"])
+
+    def test_post_close_generates_daily_summary(self):
+        service = MonitorService(
+            config_path="config/cfg.yml",
+            market_fetcher=lambda: {"上证指数": {"最新价": 3300, "涨跌额": 12, "涨跌幅(%)": 0.36}},
+            stock_fetcher=lambda _: {},
+            flow_fetcher=lambda: {},
+            analyzer_cls=FakeAnalyzer,
+            notifier_cls=FakeNotifier,
+            trade_loader=lambda: pd.DataFrame(),
+            snapshot_loader=lambda limit=20: [
+                {
+                    "timestamp": "2026-03-18 09:00:00",
+                    "session_type": "pre_open",
+                    "totals": {"total_pnl": 10},
+                    "positions": [],
+                },
+                {
+                    "timestamp": "2026-03-18 10:00:00",
+                    "session_type": "intraday",
+                    "totals": {"total_pnl": 12},
+                    "positions": [],
+                },
+            ],
+            snapshot_saver=lambda snapshot: None,
+        )
+
+        result = service.run(
+            portfolio_df=pd.DataFrame(columns=["symbol", "name", "holdings", "buy_price"]),
+            use_llm=False,
+            send_notification=False,
+            save_report=False,
+            session_type="post_close",
+            now=datetime(2026, 3, 18, 15, 10, 0),
+        )
+
+        self.assertIn("当日共记录", result["daily_summary"]["summary"])
+        self.assertIn("A股日内跟踪总结", result["daily_summary_content"])
 
 
 if __name__ == "__main__":

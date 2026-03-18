@@ -160,3 +160,66 @@ def build_trade_context(trade_log: pd.DataFrame) -> Dict[str, Dict[str, str]]:
             "last_price": f"{float(row['price']):.3f}",
         }
     return context
+
+
+def derive_position_book(trade_log: pd.DataFrame) -> pd.DataFrame:
+    """根据交易记录推导当前持仓数量与均价，使用移动平均成本法。"""
+    normalized = normalize_trade_log(trade_log)
+    if normalized.empty:
+        return pd.DataFrame(columns=["symbol", "name", "holdings", "buy_price"])
+
+    positions: Dict[str, Dict[str, float | str]] = {}
+    for _, row in normalized.sort_values("timestamp").iterrows():
+        symbol = row["symbol"]
+        side = row["side"]
+        quantity = int(row["quantity"])
+        price = float(row["price"])
+        name = row["name"]
+
+        position = positions.setdefault(
+            symbol,
+            {"symbol": symbol, "name": name, "holdings": 0, "buy_price": 0.0, "cost_amount": 0.0},
+        )
+        if name:
+            position["name"] = name
+
+        current_holdings = int(position["holdings"])
+        current_cost = float(position["cost_amount"])
+
+        if side == "buy":
+            new_holdings = current_holdings + quantity
+            new_cost = current_cost + quantity * price
+            avg_cost = new_cost / new_holdings if new_holdings > 0 else 0.0
+            position["holdings"] = new_holdings
+            position["cost_amount"] = new_cost
+            position["buy_price"] = round(avg_cost, 4)
+            continue
+
+        sell_quantity = min(quantity, current_holdings)
+        avg_cost = current_cost / current_holdings if current_holdings > 0 else 0.0
+        new_holdings = current_holdings - sell_quantity
+        new_cost = max(current_cost - sell_quantity * avg_cost, 0.0)
+        position["holdings"] = new_holdings
+        position["cost_amount"] = new_cost
+        position["buy_price"] = round(new_cost / new_holdings, 4) if new_holdings > 0 else 0.0
+
+    rows = []
+    for item in positions.values():
+        if int(item["holdings"]) <= 0:
+            continue
+        rows.append(
+            {
+                "symbol": item["symbol"],
+                "name": item["name"],
+                "holdings": int(item["holdings"]),
+                "buy_price": float(item["buy_price"]),
+            }
+        )
+    return pd.DataFrame(rows, columns=["symbol", "name", "holdings", "buy_price"])
+
+
+def list_traded_symbols(trade_log: pd.DataFrame) -> List[str]:
+    normalized = normalize_trade_log(trade_log)
+    if normalized.empty:
+        return []
+    return sorted(normalized["symbol"].dropna().astype(str).str.zfill(6).unique().tolist())

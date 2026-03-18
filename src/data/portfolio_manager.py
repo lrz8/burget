@@ -54,3 +54,34 @@ def save_portfolio(df: pd.DataFrame):
         logger.info("持仓配置已更新保存。")
     except Exception as e:
         logger.error(f"保存持仓文件失败: {e}", exc_info=True)
+
+
+def merge_portfolio_with_trade_book(
+    portfolio_df: pd.DataFrame,
+    trade_book_df: pd.DataFrame,
+    traded_symbols: list[str] | None = None,
+) -> pd.DataFrame:
+    """以交易推导出的持仓覆盖同代码的手工持仓，并补入仅存在于交易账本中的标的。"""
+    base = normalize_portfolio(portfolio_df)
+    if trade_book_df is None or trade_book_df.empty:
+        if traded_symbols:
+            base = base[~base["symbol"].isin(traded_symbols)].reset_index(drop=True)
+        return base
+
+    trade_book = normalize_portfolio(trade_book_df)
+    base_map = {row["symbol"]: row.to_dict() for _, row in base.iterrows()}
+
+    if traded_symbols:
+        for symbol in traded_symbols:
+            base_map.pop(symbol, None)
+
+    for _, row in trade_book.iterrows():
+        base_map[row["symbol"]] = {
+            "symbol": row["symbol"],
+            "name": row["name"] or base_map.get(row["symbol"], {}).get("name", ""),
+            "holdings": int(row["holdings"]),
+            "buy_price": float(row["buy_price"]),
+        }
+
+    merged = pd.DataFrame(base_map.values(), columns=REQUIRED_COLUMNS)
+    return normalize_portfolio(merged)

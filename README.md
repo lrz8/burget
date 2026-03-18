@@ -8,8 +8,10 @@
 4. 规则引擎诊断
 5. LLM 补充解读
 6. 历史快照对比
-7. 报告落盘与通知发送
-8. Streamlit 可视化面板
+7. 交易记录反推有效持仓
+8. 盘后自动汇总日报
+9. 报告落盘与通知发送
+10. Streamlit 可视化面板
 
 ## 启动方式
 
@@ -56,6 +58,12 @@ python3 main.py --mode schedule --check-interval 60 --notify
 ```bash
 python3 main.py --mode record-trade --symbol 600000 --side buy --quantity 100 --price 10.52 --note "盘中试仓"
 ```
+
+说明：
+
+1. 只要某个标的进入交易记录，系统会优先使用交易账本推导出的持仓数量和成本价。
+2. `post_close` 阶段除了生成单次诊断，还会额外输出一份当日快照汇总日报。
+3. 计划轮询默认跳过午间休市，不会在 `11:30-13:00` 之间重复抓取。
 
 ## 本地私密配置
 

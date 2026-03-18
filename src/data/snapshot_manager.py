@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -116,4 +116,60 @@ def summarize_snapshot_history(
         "action_changes": action_changes,
         "pnl_delta": pnl_delta,
         "previous_session": previous_session,
+    }
+
+
+def summarize_daily_snapshots(
+    snapshots: List[Dict[str, Any]],
+    target_date: Optional[date] = None,
+) -> Dict[str, Any]:
+    current_date = target_date or datetime.now().date()
+    daily = []
+    for item in snapshots:
+        ts = item.get("timestamp", "")
+        try:
+            snapshot_time = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if snapshot_time.date() == current_date:
+            daily.append(item)
+
+    if not daily:
+        return {
+            "report_date": current_date.strftime("%Y-%m-%d"),
+            "snapshot_count": 0,
+            "sessions": [],
+            "pnl_change": 0.0,
+            "summary": "当日还没有历史快照，无法形成盘中节奏总结。",
+            "latest_actions": [],
+        }
+
+    daily.sort(key=lambda item: item.get("timestamp", ""))
+    first = daily[0]
+    last = daily[-1]
+    first_pnl = float(first.get("totals", {}).get("total_pnl", 0.0))
+    last_pnl = float(last.get("totals", {}).get("total_pnl", 0.0))
+    sessions = [item.get("session_type", "") for item in daily]
+    latest_actions = [
+        {
+            "symbol": item.get("symbol", ""),
+            "name": item.get("name", ""),
+            "action": item.get("action", ""),
+            "pnl_pct": item.get("pnl_pct", 0.0),
+        }
+        for item in last.get("positions", [])
+    ]
+    summary = (
+        f"当日共记录 {len(daily)} 条快照，阶段覆盖 {', '.join(sessions)}，"
+        f"组合浮盈亏从 {first_pnl} 元变为 {last_pnl} 元，变化 {round(last_pnl - first_pnl, 2)} 元。"
+    )
+    return {
+        "report_date": current_date.strftime("%Y-%m-%d"),
+        "snapshot_count": len(daily),
+        "sessions": sessions,
+        "pnl_change": round(last_pnl - first_pnl, 2),
+        "summary": summary,
+        "latest_actions": latest_actions,
+        "open_snapshot": first,
+        "close_snapshot": last,
     }

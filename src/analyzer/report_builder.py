@@ -37,6 +37,49 @@ def build_markdown_report(
     return "\n".join(section for section in sections if section is not None).strip() + "\n"
 
 
+def build_daily_summary_report(
+    daily_summary: Dict[str, Any],
+    recent_trades: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    lines = [
+        "# A股日内跟踪总结",
+        f"**日期：{daily_summary.get('report_date', datetime.now().strftime('%Y-%m-%d'))}**",
+        "",
+        "## 当日概览",
+        f"- 快照数量：{daily_summary.get('snapshot_count', 0)}",
+        f"- 阶段覆盖：{', '.join(daily_summary.get('sessions', [])) or '暂无'}",
+        f"- 组合盈亏变化：{daily_summary.get('pnl_change', 0.0)} 元",
+        f"- 总结：{daily_summary.get('summary', '暂无。')}",
+        "",
+        "## 收盘动作清单",
+        "| 代码 | 名称 | 动作 | 当前盈亏比例 |",
+        "| --- | --- | --- | ---: |",
+    ]
+
+    latest_actions = daily_summary.get("latest_actions", [])
+    if latest_actions:
+        for item in latest_actions:
+            lines.append(
+                f"| {item.get('symbol', '')} | {item.get('name', '')} | "
+                f"{item.get('action', '')} | {item.get('pnl_pct', 0.0)}% |"
+            )
+    else:
+        lines.append("| - | - | - | - |")
+
+    lines.extend(["", "## 当日交易记录"])
+    if recent_trades:
+        for item in recent_trades:
+            side_label = "买入" if item.get("side") == "buy" else "卖出"
+            lines.append(
+                f"- {item.get('timestamp', '')} {item.get('symbol', '')} {item.get('name', '')} "
+                f"{side_label} {item.get('quantity', '')} 股，价格 {item.get('price', '')}。"
+            )
+    else:
+        lines.append("- 当日无交易记录。")
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def _render_market_section(
     market_data: Dict[str, Any],
     fund_flow: Dict[str, Any],

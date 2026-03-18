@@ -5,19 +5,26 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 
 from src.analyzer.llm_report import LLMAnalyzer
-from src.analyzer.report_builder import build_markdown_report
+from src.analyzer.report_builder import build_daily_summary_report, build_markdown_report
 from src.analyzer.strategy_engine import build_analysis_result
 from src.config.loader import load_config
-from src.data.portfolio_manager import load_portfolio, normalize_portfolio
+from src.data.portfolio_manager import (
+    load_portfolio,
+    merge_portfolio_with_trade_book,
+    normalize_portfolio,
+)
 from src.data.snapshot_manager import (
     append_snapshot,
     build_snapshot_payload,
     load_snapshots,
+    summarize_daily_snapshots,
     summarize_snapshot_history,
 )
 from src.data.trade_manager import (
     build_trade_context,
+    derive_position_book,
     get_recent_trades,
+    list_traded_symbols,
     load_trade_log,
     summarize_recent_trades,
 )
@@ -72,8 +79,15 @@ class MonitorService:
         current_time = now or datetime.now()
         resolved_session = resolve_session_type(current_time) if session_type == "auto" else session_type
         config = load_config(self.config_path)
-        portfolio = normalize_portfolio(portfolio_df) if portfolio_df is not None else load_portfolio()
         trade_log = trade_df if trade_df is not None else self.trade_loader()
+        manual_portfolio = normalize_portfolio(portfolio_df) if portfolio_df is not None else load_portfolio()
+        trade_book = derive_position_book(trade_log)
+        traded_symbols = list_traded_symbols(trade_log)
+        portfolio = merge_portfolio_with_trade_book(
+            manual_portfolio,
+            trade_book,
+            traded_symbols=traded_symbols,
+        )
         recent_trade_df = get_recent_trades(trade_log, now=current_time)
         recent_trades = summarize_recent_trades(recent_trade_df)
         trade_context = build_trade_context(recent_trade_df)
@@ -107,7 +121,6 @@ class MonitorService:
             recent_trades=recent_trades,
         )
 
-        report_path = save_markdown_report(report_content) if save_report else None
         snapshot = build_snapshot_payload(
             session_type=resolved_session,
             market_data=market_data,
@@ -116,7 +129,18 @@ class MonitorService:
             recent_trades=recent_trades,
             timestamp=current_time,
         )
+        report_path = save_markdown_report(report_content, prefix=resolved_session) if save_report else None
         self.snapshot_saver(snapshot)
+
+        daily_summary = {}
+        daily_summary_content = ""
+        daily_summary_path = None
+        if resolved_session == "post_close":
+            daily_summary = summarize_daily_snapshots([*snapshots, snapshot], current_time.date())
+            daily_summary_content = build_daily_summary_report(daily_summary, recent_trades=recent_trades)
+            if save_report:
+                daily_summary_path = save_markdown_report(daily_summary_content, prefix="daily_summary")
+
         if send_notification and report_content:
             notifier = self.notifier_cls(config)
             notifier.notify_all(f"AI 盯盘助手 {resolved_session} 诊断", report_content)
@@ -124,12 +148,17 @@ class MonitorService:
         result = {
             "config": config,
             "portfolio": portfolio,
+            "manual_portfolio": manual_portfolio,
+            "trade_book": trade_book,
             "session_type": resolved_session,
             "market_data": market_data,
             "stock_data": stock_data,
             "fund_flow": fund_flow,
             "recent_trades": recent_trades,
             "history_summary": history_summary,
+            "daily_summary": daily_summary,
+            "daily_summary_content": daily_summary_content,
+            "daily_summary_path": daily_summary_path,
             "analysis": analysis,
             "llm_commentary": llm_commentary,
             "report_content": report_content,

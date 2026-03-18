@@ -116,6 +116,7 @@ def main():
         session_type="post_close",
     )
     print(f"REPORT_PATH={result['report_path']}")
+    print(f"DAILY_SUMMARY_PATH={result['daily_summary_path']}")
     print(result["report_content"])
 
 
