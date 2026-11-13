@@ -8,7 +8,7 @@
 4. 规则引擎诊断
 5. LLM 补充解读
 6. 历史快照对比
-7. 交易记录反推有效持仓
+7. 显式选择手工持仓或交易账本推导持仓
 8. 盘后自动汇总日报
 9. 报告落盘与通知发送
 10. Streamlit 可视化面板
@@ -61,9 +61,31 @@ python3 main.py --mode record-trade --symbol 600000 --side buy --quantity 100 --
 
 说明：
 
-1. 只要某个标的进入交易记录，系统会优先使用交易账本推导出的持仓数量和成本价。
-2. `post_close` 阶段除了生成单次诊断，还会额外输出一份当日快照汇总日报。
-3. 计划轮询默认跳过午间休市，不会在 `11:30-13:00` 之间重复抓取。
+1. 默认采用手工持仓（manual），交易记录只提供上下文，不会覆盖持仓表。升级后如需继续由完整交易历史推导持仓，请在本地配置中显式选择 trades。
+2. 当前数据源为日线：盘前、盘中及非交易时段仅生成观察提示；盘后且行情日期与报告日期一致时，才生成下一交易日条件预案。行情日期缺失、过期或标的抓取失败时，不生成该标的的买卖建议。
+3. 现有 12% 止盈、-8% 止损阈值保持不变，尚未经过历史收益回测；日线涨跌不再作为做 T 的依据。
+4. 计划任务使用上海时间和 AkShare 交易日历，日历不可用或未覆盖目标日期时暂停自动运行；手工报告仍可使用。每个任务有效期为 120 秒，过期跳过；执行状态保存在本地 data/scheduler_state.json，重启不会补跑当日全部任务。
+5. 盘后日报统计“快照浮动盈亏变化”，不包含已实现收益、交易费用和资金出入，不能当作账户当日收益。估值不完整时暂停计算变化。
+6. 页面普通刷新不再写入历史快照；主动生成报告和计划任务会保存快照。
+
+## 持仓来源与升级
+
+本地配置 config/cfg.yml 中的 monitor.position_source 支持：
+
+- manual（默认）：data/portfolio.csv 是当前持仓的唯一来源；记录买卖后需在持仓表更新数量和均价。
+- trades：从 data/trades.csv 的完整交易历史推导仓位，手工持仓不参与合并；超过持仓数量的卖出会报错，要求补齐账本。
+
+如果只有近期交易，可以在 trades 模式配置明确的期初持仓：
+
+~~~yaml
+monitor:
+  position_source: trades
+  buy_cooldown_minutes: 30
+  opening_positions_path: data/opening_positions.csv
+  opening_as_of: "2026-03-17 15:00:00"
+~~~
+
+期初 CSV 保持 symbol,name,holdings,buy_price 四列，代表 opening_as_of 时点的持仓；仅叠加该时点之后的交易，避免重复记账。期初文件不存在、时点未配置或交易账本无法对账时会报错，不会静默改为空仓。未来时间的交易不参与当前诊断。期初持仓文件和调度状态已加入 .gitignore。
 
 ## 本地私密配置
 
@@ -93,9 +115,9 @@ source ~/.zshrc
 
 仓库内只保留示例模板：
 
-1. [config/cfg.example.yml](/home/lv/Burget/config/cfg.example.yml)
-2. [data/portfolio.example.csv](/home/lv/Burget/data/portfolio.example.csv)
-3. [data/trades.example.csv](/home/lv/Burget/data/trades.example.csv)
+1. [config/cfg.example.yml](config/cfg.example.yml)
+2. [data/portfolio.example.csv](data/portfolio.example.csv)
+3. [data/trades.example.csv](data/trades.example.csv)
 
 ## 测试
 

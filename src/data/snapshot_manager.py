@@ -4,6 +4,8 @@ import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+from src.utils.trading_time import market_now
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,7 @@ def build_snapshot_payload(
     recent_trades: List[Dict[str, str]],
     timestamp: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    current_time = timestamp or datetime.now()
+    current_time = market_now(timestamp)
     return {
         "timestamp": current_time.strftime("%Y-%m-%d %H:%M:%S"),
         "session_type": session_type,
@@ -68,6 +70,9 @@ def build_snapshot_payload(
                 "action": item["action"],
                 "latest_price": item["latest_price"],
                 "pnl_pct": item["pnl_pct"],
+                "data_available": item.get("data_available", False),
+                "data_fresh": item.get("data_fresh", False),
+                "quote_date": item.get("quote_date", ""),
             }
             for item in analysis.get("positions", [])
         ],
@@ -91,10 +96,10 @@ def summarize_snapshot_history(
     previous = snapshots[-1]
     previous_totals = previous.get("totals", {})
     current_totals = current_analysis.get("totals", {})
+    complete = current_totals.get("valuation_complete", False) and previous_totals.get("valuation_complete", False)
     pnl_delta = round(
-        float(current_totals.get("total_pnl", 0.0)) - float(previous_totals.get("total_pnl", 0.0)),
-        2,
-    )
+        float(current_totals.get("total_pnl", 0.0)) - float(previous_totals.get("total_pnl", 0.0)), 2,
+    ) if complete else None
 
     previous_actions = {
         item.get("symbol"): item.get("action")
@@ -107,9 +112,10 @@ def summarize_snapshot_history(
             action_changes += 1
 
     previous_session = previous.get("session_type", "")
+    delta_text = f"浮动盈亏变化 {pnl_delta} 元" if complete else "估值不完整或行情过期，暂停计算浮动盈亏变化"
     summary = (
-        f"相较上一条 {previous_session or '历史'} 快照，组合浮盈亏变化 {pnl_delta} 元，"
-        f"动作发生变化的标的数为 {action_changes}。"
+        f"相较上一条 {previous_session or '历史'} 快照，{delta_text}；"
+        f"动作变化标的数为 {action_changes}。浮动盈亏变化不代表账户收益。"
     )
     return {
         "summary": summary,
@@ -123,7 +129,7 @@ def summarize_daily_snapshots(
     snapshots: List[Dict[str, Any]],
     target_date: Optional[date] = None,
 ) -> Dict[str, Any]:
-    current_date = target_date or datetime.now().date()
+    current_date = target_date or market_now().date()
     daily = []
     for item in snapshots:
         ts = item.get("timestamp", "")
@@ -139,7 +145,8 @@ def summarize_daily_snapshots(
             "report_date": current_date.strftime("%Y-%m-%d"),
             "snapshot_count": 0,
             "sessions": [],
-            "pnl_change": 0.0,
+            "pnl_change": None,
+            "valuation_complete": False,
             "summary": "当日还没有历史快照，无法形成盘中节奏总结。",
             "latest_actions": [],
         }
@@ -159,15 +166,22 @@ def summarize_daily_snapshots(
         }
         for item in last.get("positions", [])
     ]
+    complete = all(item.get("totals", {}).get("valuation_complete", False) for item in daily)
+    floating_change = round(last_pnl - first_pnl, 2) if complete else None
+    delta_text = (
+        f"浮动盈亏从 {first_pnl} 元变为 {last_pnl} 元，变化 {floating_change} 元。"
+        if complete else "部分快照估值不完整或行情过期，暂停计算浮动盈亏变化。"
+    )
     summary = (
-        f"当日共记录 {len(daily)} 条快照，阶段覆盖 {', '.join(sessions)}，"
-        f"组合浮盈亏从 {first_pnl} 元变为 {last_pnl} 元，变化 {round(last_pnl - first_pnl, 2)} 元。"
+        f"当日共记录 {len(daily)} 条快照，阶段覆盖 {', '.join(sessions)}；{delta_text}"
+        "此项不含已实现收益、交易费用及资金出入，不代表当日账户收益。"
     )
     return {
         "report_date": current_date.strftime("%Y-%m-%d"),
         "snapshot_count": len(daily),
         "sessions": sessions,
-        "pnl_change": round(last_pnl - first_pnl, 2),
+        "pnl_change": floating_change,
+        "valuation_complete": complete,
         "summary": summary,
         "latest_actions": latest_actions,
         "open_snapshot": first,

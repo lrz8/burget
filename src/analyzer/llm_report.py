@@ -18,8 +18,10 @@ class LLMAnalyzer:
             
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
-        )
+            base_url=self.base_url,
+            timeout=30.0,
+            max_retries=1,
+        ) if self.api_key else None
 
     def generate_review(self, market_data: Dict[str, Any], stock_data: Dict[str, Any], fund_flow: Dict[str, Any]) -> str:
         """生成补充解读文本"""
@@ -28,7 +30,7 @@ class LLMAnalyzer:
         if not self.api_key:
             msg = "LLM_API_KEY 缺失，跳过 LLM 分析环节。"
             logger.error(msg)
-            return msg
+            return ""
             
         if not stock_data:
             msg = "当前没有可分析的持仓行情数据，请先检查持仓列表或行情接口状态。"
@@ -68,7 +70,7 @@ class LLMAnalyzer:
                     },
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
+                temperature=0.2,
                 max_tokens=2000
             )
             report = response.choices[0].message.content
@@ -76,4 +78,4 @@ class LLMAnalyzer:
             return report
         except Exception as e:
             logger.error(f"调用 LLM 生成补充解读时发生错误: {e}", exc_info=True)
-            return f"生成补充解读失败，错误信息: {e}"
+            return ""

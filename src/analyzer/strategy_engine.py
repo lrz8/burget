@@ -1,50 +1,43 @@
 import logging
+import math
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from src.utils.trading_time import market_now
 
 logger = logging.getLogger(__name__)
 
 
+def _number(value: Any) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def analyze_market(market_data: Dict[str, Any], fund_flow: Dict[str, Any]) -> Dict[str, Any]:
-    """基于已抓取数据生成市场强弱判断。"""
-    if not market_data:
-        return {
-            "bias": "数据不足",
-            "summary": "未获取到指数数据，无法判断市场强弱。",
-            "score": 0,
-        }
+    """金额与占比分开处理，不重复叠加资金分类。"""
+    changes = [
+        value for item in market_data.values()
+        if (value := _number(item.get("涨跌幅(%)"))) is not None
+    ]
+    if not changes:
+        return {"bias": "数据不足", "summary": "未获取到有效指数数据，无法判断市场强弱。", "score": 0}
 
-    pct_changes = [float(item.get("涨跌幅(%)", 0.0)) for item in market_data.values()]
-    avg_change = sum(pct_changes) / len(pct_changes) if pct_changes else 0.0
-
-    net_flow = 0.0
-    flow_keywords = ("净流入", "净额", "净买入", "主力净")
-    for key, value in fund_flow.items():
-        if any(keyword in str(key) for keyword in flow_keywords):
-            try:
-                net_flow += float(value)
-            except (TypeError, ValueError):
-                continue
-
+    avg_change = sum(changes) / len(changes)
+    net_flow = _number(fund_flow.get("主力净流入-净额", fund_flow.get("主力净流入")))
     score = avg_change
-    if net_flow > 0:
-        score += 0.5
-    elif net_flow < 0:
-        score -= 0.5
-
-    if score >= 1.0:
-        bias = "偏强"
-    elif score <= -1.0:
-        bias = "偏弱"
-    else:
-        bias = "震荡"
-
-    summary = (
-        f"主要指数平均涨跌幅约为 {avg_change:.2f}%，"
-        f"结合资金流向信号，当前市场判断为{bias}。"
-    )
-    logger.info("市场分析完成: bias=%s, score=%.2f", bias, score)
-    return {"bias": bias, "summary": summary, "score": round(score, 2)}
+    if net_flow is not None:
+        score += 0.5 if net_flow > 0 else -0.5 if net_flow < 0 else 0
+    bias = "偏强" if score >= 1 else "偏弱" if score <= -1 else "震荡"
+    flow_hint = "结合主力净流入金额" if net_flow is not None else "资金流数据不足，仅参考指数"
+    return {
+        "bias": bias,
+        "summary": f"{len(changes)} 个有效指数平均涨跌幅约为 {avg_change:.2f}%，{flow_hint}，当前判断为{bias}。",
+        "score": round(score, 2),
+        "fund_flow_available": net_flow is not None,
+    }
 
 
 def analyze_positions(
@@ -53,57 +46,77 @@ def analyze_positions(
     session_type: str = "intraday",
     trade_context: Optional[Dict[str, Dict[str, str]]] = None,
     previous_snapshot: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+    buy_cooldown_minutes: int = 30,
 ) -> List[Dict[str, Any]]:
-    """根据持仓盈亏与当日涨跌幅生成结构化建议。"""
     analyses: List[Dict[str, Any]] = []
-    market_bias = market_analysis.get("bias", "震荡")
     previous_actions = {
         item.get("symbol"): item.get("action")
         for item in (previous_snapshot or {}).get("positions", [])
     }
-
+    current = market_now(now) if now is not None else None
     for symbol, info in stock_data.items():
-        pnl_pct = float(info.get("盈亏比例(%)", 0.0))
-        day_pct = float(info.get("涨跌幅(%)", 0.0))
-        floating_pnl = float(info.get("浮动盈亏(元)", 0.0))
-        holding_value = float(info.get("持仓市值(元)", 0.0))
-        latest_price = float(info.get("最新价", 0.0))
-        buy_price = float(info.get("持仓成本价", 0.0))
-
-        action, reasons, confidence = _decide_action(
-            pnl_pct=pnl_pct,
-            day_pct=day_pct,
-            market_bias=market_bias,
-            holding_value=holding_value,
-            session_type=session_type,
-            trade_context=(trade_context or {}).get(symbol, {}),
+        price = _number(info.get("最新价"))
+        cost = _number(info.get("持仓成本价"))
+        pnl = _number(info.get("盈亏比例(%)"))
+        day = _number(info.get("涨跌幅(%)"))
+        value = _number(info.get("持仓市值(元)"))
+        floating = _number(info.get("浮动盈亏(元)"))
+        available = (
+            price is not None and price > 0 and cost is not None and cost > 0
+            and pnl is not None and day is not None and value is not None and value >= 0
+            and floating is not None
         )
-        previous_action = previous_actions.get(symbol, "")
-        if previous_action and previous_action != action:
-            reasons.append(f"上一条快照建议为“{previous_action}”，当前已切换为“{action}”。")
-            confidence = "medium" if confidence == "low" else confidence
-        elif previous_action:
-            reasons.append(f"与上一条快照相比，建议维持“{action}”。")
-
-        analyses.append(
-            {
-                "symbol": symbol,
-                "name": info.get("名称", symbol),
-                "type": info.get("类型", ""),
-                "latest_price": round(latest_price, 2),
-                "buy_price": round(buy_price, 3),
-                "day_pct": round(day_pct, 2),
-                "pnl_pct": round(pnl_pct, 2),
-                "floating_pnl": round(floating_pnl, 2),
-                "holding_value": round(holding_value, 2),
-                "action": action,
-                "reasons": reasons,
-                "confidence": confidence,
-            }
-        )
-
-    analyses.sort(key=lambda item: item["pnl_pct"])
-    logger.info("持仓诊断完成，共 %s 个标的。", len(analyses))
+        reasons: List[str] = []
+        quote_date = None
+        try:
+            quote_date = date.fromisoformat(str(info.get("行情日期", ""))[:10])
+        except ValueError:
+            pass
+        fresh = current is None or quote_date == current.date()
+        if not available:
+            action, confidence = "持仓观望", "low"
+            reasons.append("数据不足，建议观察：行情缺失、数值无效或持仓成本未配置。")
+        elif not fresh:
+            action, confidence = "持仓观望", "low"
+            reasons.append(
+                f"数据不足，建议观察：行情日期为 {quote_date or '未知'}，"
+                f"与本次日期 {current.date()} 不一致。"
+            )
+        elif current is not None and (
+            info.get("数据周期") != "daily" or session_type != "post_close"
+        ):
+            action, confidence = "持仓观望", "low"
+            reasons.append("当前仅支持日线诊断；盘前、盘中及非交易时段不生成可执行买卖建议，等待盘后确认。")
+        else:
+            action, reasons, confidence = _decide_action(
+                pnl_pct=pnl, day_pct=day,
+                market_bias=market_analysis.get("bias", "数据不足"),
+                holding_value=value, session_type=session_type,
+                trade_context=(trade_context or {}).get(symbol, {}),
+                now=current, buy_cooldown_minutes=buy_cooldown_minutes,
+            )
+        previous_action = previous_actions.get(symbol)
+        if previous_action:
+            if previous_action != action:
+                reasons.append(f"上一条快照建议为“{previous_action}”，当前切换为“{action}”。")
+            else:
+                reasons.append(f"与上一条快照相比，建议维持“{action}”。")
+        analyses.append({
+            "symbol": symbol, "name": info.get("名称", symbol), "type": info.get("类型", ""),
+            "latest_price": round(price, 3) if price is not None else None,
+            "buy_price": round(cost, 4) if cost is not None else None,
+            "day_pct": round(day, 2) if day is not None else None,
+            "pnl_pct": round(pnl, 2) if pnl is not None else None,
+            "floating_pnl": round(floating, 2) if floating is not None else None,
+            "holding_value": round(value, 2) if value is not None else None,
+            "action": action, "reasons": reasons, "confidence": confidence,
+            "data_available": available, "data_fresh": fresh,
+            "quote_date": quote_date.isoformat() if quote_date else "",
+        })
+    analyses.sort(key=lambda item: (
+        item["pnl_pct"] is None, item["pnl_pct"] if item["pnl_pct"] is not None else 0
+    ))
     return analyses
 
 
@@ -114,99 +127,69 @@ def build_analysis_result(
     session_type: str = "intraday",
     trade_context: Optional[Dict[str, Dict[str, str]]] = None,
     snapshots: Optional[List[Dict[str, Any]]] = None,
+    now: Optional[datetime] = None,
+    buy_cooldown_minutes: int = 30,
 ) -> Dict[str, Any]:
-    market_analysis = analyze_market(market_data, fund_flow)
-    previous_snapshot = snapshots[-1] if snapshots else None
-    position_analysis = analyze_positions(
-        stock_data,
-        market_analysis,
-        session_type=session_type,
-        trade_context=trade_context,
-        previous_snapshot=previous_snapshot,
+    market = analyze_market(market_data, fund_flow)
+    positions = analyze_positions(
+        stock_data, market, session_type=session_type, trade_context=trade_context,
+        previous_snapshot=snapshots[-1] if snapshots else None,
+        now=now, buy_cooldown_minutes=buy_cooldown_minutes,
     )
-    totals = _summarize_positions(position_analysis)
-    return {
-        "market": market_analysis,
-        "positions": position_analysis,
-        "totals": totals,
-    }
+    return {"market": market, "positions": positions, "totals": _summarize_positions(positions)}
 
 
 def _decide_action(
-    pnl_pct: float,
-    day_pct: float,
-    market_bias: str,
-    holding_value: float,
-    session_type: str,
-    trade_context: Optional[Dict[str, str]],
+    pnl_pct: float, day_pct: float, market_bias: str, holding_value: float,
+    session_type: str, trade_context: Optional[Dict[str, str]],
+    now: Optional[datetime] = None, buy_cooldown_minutes: int = 30,
 ) -> tuple[str, List[str], str]:
-    reasons: List[str] = []
-    trade_context = trade_context or {}
-
+    """先生成候选动作，再统一应用交易冷却和阶段说明。"""
+    context = trade_context or {}
     if holding_value <= 0:
-        return "持仓观望", ["当前持仓市值为 0，暂无实际仓位需要处理。"], "low"
-
-    if pnl_pct >= 12:
-        action = "清仓止盈"
-        reasons.append(f"当前累计浮盈 {pnl_pct:.2f}%，已达到较高收益区间。")
-        reasons.append(f"当日涨跌幅为 {day_pct:.2f}%，优先考虑兑现收益而不是继续放大波动。")
-        return action, reasons, "high"
-
-    if pnl_pct <= -8:
-        action = "割肉止损"
-        reasons.append(f"当前累计亏损 {pnl_pct:.2f}%，已超过预设风险容忍区间。")
-        reasons.append("在没有更多分时与事件信息前，先控制回撤更稳妥。")
-        return action, reasons, "high"
-
-    if pnl_pct >= 5 and day_pct < 0:
-        action = "做T（低吸高抛）"
-        reasons.append(f"当前仍有 {pnl_pct:.2f}% 的浮盈，但当日回落 {day_pct:.2f}%。")
-        reasons.append("已有利润垫时优先通过仓位微调降低波动。")
-        return action, reasons, "medium"
-
-    if -5 <= pnl_pct <= 5 and market_bias == "偏强" and day_pct <= -1.5:
-        action = "逢低加仓"
-        reasons.append(f"当前总盈亏 {pnl_pct:.2f}% 接近成本区，价格回撤 {day_pct:.2f}%。")
-        reasons.append("市场整体偏强时，成本附近的回撤更适合分批低吸。")
-        return action, reasons, "medium"
-
-    if pnl_pct < 0 and day_pct > 1.5:
-        action = "做T（低吸高抛）"
-        reasons.append(f"当前仍亏损 {pnl_pct:.2f}%，但当日反弹 {day_pct:.2f}%。")
-        reasons.append("先利用反弹降低持仓成本，比直接追价加仓更稳。")
-        action, reasons, confidence = action, reasons, "medium"
+        action, reasons, confidence = "持仓观望", ["当前无实际仓位需要处理。"], "low"
+    elif pnl_pct >= 12:
+        action, confidence = "清仓止盈", "high"
+        reasons = [f"累计浮盈 {pnl_pct:.2f}%，触及现有 12% 止盈规则。"]
+    elif pnl_pct <= -8:
+        action, confidence = "割肉止损", "high"
+        reasons = [f"累计亏损 {pnl_pct:.2f}%，触及现有 -8% 止损规则。"]
+    elif -5 <= pnl_pct <= 5 and market_bias == "偏强" and day_pct <= -1.5:
+        action, confidence = "逢低加仓", "medium"
+        reasons = [f"累计盈亏 {pnl_pct:.2f}%，当日回撤 {day_pct:.2f}%，市场偏强；仅作为条件预案。"]
     else:
-        action = "持仓观望"
-        reasons.append(f"当前总盈亏 {pnl_pct:.2f}%，当日涨跌幅 {day_pct:.2f}%。")
-        reasons.append("现有数据不足以支撑更激进动作，先观察更合适。")
-        confidence = "low"
+        action, confidence = "持仓观望", "low"
+        reasons = [f"累计盈亏 {pnl_pct:.2f}%，当日涨跌 {day_pct:.2f}%。"]
+        if (pnl_pct >= 5 and day_pct < 0) or (pnl_pct < 0 and day_pct > 1.5):
+            reasons.append("日线信息不足以识别日内买卖点，不据此建议做 T。")
+        else:
+            reasons.append("现有数据不足以支持进一步操作。")
 
-    last_side = trade_context.get("last_side", "")
-    last_timestamp = trade_context.get("last_timestamp", "")
-    if last_side == "buy" and action == "逢低加仓":
-        action = "持仓观望"
-        reasons.append(f"最近一次记录交易为买入（{last_timestamp}），避免短周期内连续加仓。")
-        confidence = "medium"
-    elif last_side == "sell" and action == "清仓止盈":
-        reasons.append(f"最近一次记录交易为卖出（{last_timestamp}），若已部分兑现可分批处理剩余仓位。")
-
+    if context.get("last_side") == "buy" and action == "逢低加仓":
+        try:
+            last_time = datetime.fromisoformat(context.get("last_timestamp", ""))
+            elapsed = market_now(now) - market_now(last_time)
+            cooling_down = timedelta(0) <= elapsed < timedelta(minutes=buy_cooldown_minutes)
+        except (TypeError, ValueError):
+            cooling_down = True
+        if cooling_down:
+            action, confidence = "持仓观望", "medium"
+            reasons.append(f"最近买入仍处于 {buy_cooldown_minutes} 分钟冷却期，暂停连续加仓。")
     if session_type == "pre_open":
-        reasons.append("当前属于盘前预判，执行上更适合等待开盘后再确认。")
+        reasons.append("盘前仅作预案，等待开盘后重新确认数据。")
     elif session_type == "post_close":
-        reasons.append("当前属于盘后总结，该动作更适合作为下一交易日预案。")
-
+        reasons.append("盘后动作仅作为下一交易日预案，执行前应重新确认行情和可用仓位。")
     return action, reasons, confidence
 
 
-def _summarize_positions(position_analysis: List[Dict[str, Any]]) -> Dict[str, Any]:
-    total_value = sum(item["holding_value"] for item in position_analysis)
-    total_pnl = sum(item["floating_pnl"] for item in position_analysis)
-    gain_count = sum(1 for item in position_analysis if item["pnl_pct"] > 0)
-    loss_count = sum(1 for item in position_analysis if item["pnl_pct"] < 0)
+def _summarize_positions(positions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
-        "count": len(position_analysis),
-        "total_value": round(total_value, 2),
-        "total_pnl": round(total_pnl, 2),
-        "gain_count": gain_count,
-        "loss_count": loss_count,
+        "count": len(positions),
+        "total_value": round(sum(item["holding_value"] or 0 for item in positions), 2),
+        "total_pnl": round(sum(item["floating_pnl"] or 0 for item in positions), 2),
+        "gain_count": sum(1 for item in positions if (item["pnl_pct"] or 0) > 0),
+        "loss_count": sum(1 for item in positions if (item["pnl_pct"] or 0) < 0),
+        "valuation_complete": all(item["data_available"] and item["data_fresh"] for item in positions),
+        "missing_symbols": [item["symbol"] for item in positions if not item["data_available"]],
+        "stale_symbols": [item["symbol"] for item in positions if not item["data_fresh"]],
     }
