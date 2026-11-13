@@ -97,7 +97,11 @@ def main():
             else:
                 st.success("✅ 交易记录已保存。")
 
-        recent_trade_df = load_trade_log().sort_values("timestamp", ascending=False).head(5)
+        try:
+            recent_trade_df = load_trade_log().sort_values("timestamp", ascending=False).head(5)
+        except (ValueError, OSError) as exc:
+            st.error(f"无法读取交易记录：{exc}")
+            st.stop()
         if not recent_trade_df.empty:
             st.dataframe(recent_trade_df, use_container_width=True, hide_index=True)
 
@@ -125,7 +129,10 @@ def main():
     # --- 顶栏：大盘概览 ---
     st.header("📊 市场概览")
     st.caption(f"当前阶段：{session_type}；日线数据，仅作观察或盘后预案。")
-    st.caption(f"持仓来源：{analysis_result['position_source']}。manual 以左侧持仓为准；trades 从完整账本或明确的期初持仓推导。")
+    if analysis_result["position_source"] == "manual":
+        st.caption("持仓来源：手工维护。交易记录不会自动更新持仓，请同步维护左侧持仓表。")
+    else:
+        st.caption("持仓来源：交易账本。仓位由完整记录或明确的期初持仓推导，左侧手工持仓表不参与计算。")
     if market_data:
         cols = st.columns(len(market_data))
         for idx, (name, data) in enumerate(market_data.items()):

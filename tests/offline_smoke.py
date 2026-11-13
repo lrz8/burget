@@ -1,5 +1,7 @@
 import os
 import sys
+from datetime import datetime
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -108,13 +110,30 @@ def main():
         snapshot_saver=lambda snapshot: None,
     )
 
-    result = service.run(
-        portfolio_df=portfolio,
-        use_llm=True,
-        send_notification=False,
-        save_report=True,
-        session_type="post_close",
-    )
+    original_stocks = service.stock_fetcher
+    original_market = service.market_fetcher
+    service.stock_fetcher = lambda portfolio: {
+        symbol: {**info, "行情日期": "2026-03-18", "数据周期": "daily"}
+        for symbol, info in original_stocks(portfolio).items()
+    }
+    service.market_fetcher = lambda: {
+        name: {**info, "行情日期": "2026-03-18", "数据周期": "daily"}
+        for name, info in original_market().items()
+    }
+    service.flow_fetcher = lambda: {"日期": "2026-03-18", "主力净流入-净额": 28.6}
+    with patch("src.service.monitor_service.load_config", return_value={
+        "llm": {"api_key": "test-placeholder"}, "monitor": {"position_source": "manual"}, "notifier": {},
+    }):
+        result = service.run(
+            portfolio_df=portfolio, use_llm=True, send_notification=False,
+            save_report=True, session_type="post_close", now=datetime(2026, 3, 18, 15, 10),
+        )
+    assert result["analysis"]["totals"]["valuation_complete"]
+    assert "清仓止盈" in result["report_content"]
+    assert "割肉止损" in result["report_content"]
+    assert "指数整体偏强" in result["llm_commentary"]
+    assert result["report_path"].read_text(encoding="utf-8") == result["report_content"]
+    assert result["daily_summary_path"].exists()
     print(f"REPORT_PATH={result['report_path']}")
     print(f"DAILY_SUMMARY_PATH={result['daily_summary_path']}")
     print(result["report_content"])

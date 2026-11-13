@@ -128,7 +128,7 @@ def record_trade(
             }
         ]
     )
-    updated = pd.concat([trade_log, new_row], ignore_index=True)
+    updated = new_row if trade_log.empty else pd.concat([trade_log, new_row], ignore_index=True)
     save_trade_log(updated, path)
     return normalize_trade_log(updated)
 
