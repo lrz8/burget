@@ -1,4 +1,5 @@
 import argparse
+import logging
 from datetime import datetime
 import os
 import subprocess
@@ -78,7 +79,10 @@ def main():
 
         if args.mode == "schedule-plan":
             print("今日计划任务：")
-            for item in build_schedule_plan():
+            plan = build_schedule_plan()
+            if not plan:
+                print("今日没有自动任务：非交易日或交易日历不可用，详情见日志。")
+            for item in plan:
                 print(f"- {item['run_at']} {item['session_type']}")
             return
 
@@ -127,7 +131,9 @@ def main():
     except KeyboardInterrupt:
         print("\n盯盘助手已安全退出。")
     except Exception as e:
-        print(f"启动失败: {e}")
+        logging.exception("执行失败")
+        print(f"执行失败: {e}")
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()

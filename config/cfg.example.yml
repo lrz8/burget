@@ -6,6 +6,13 @@ llm:
 monitor:
   symbols: "600000,159915"
   holdings: "100,200"
+  # manual: 以持仓表为准；trades: 使用完整账本或明确的期初持仓。
+  position_source: manual
+  buy_cooldown_minutes: 30
+  # trades 模式需要期初持仓时启用，文件列与 portfolio.csv 相同。
+  opening_positions_path: ""
+  # 期初持仓包含此时点及之前的交易，仅叠加此时点之后的记录。
+  opening_as_of: ""
 
 notifier:
   serverchan_sendkey: ""

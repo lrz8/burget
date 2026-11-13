@@ -29,17 +29,17 @@ def normalize_portfolio(df: pd.DataFrame) -> pd.DataFrame:
     normalized = normalized.drop_duplicates(subset=["symbol"], keep="last").reset_index(drop=True)
     return normalized
 
-def load_portfolio() -> pd.DataFrame:
+def load_portfolio(path: str = PORTFOLIO_FILE) -> pd.DataFrame:
     """从 CSV 加载持仓和买入价信息"""
-    if not os.path.exists(PORTFOLIO_FILE):
-        os.makedirs(os.path.dirname(PORTFOLIO_FILE), exist_ok=True)
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
         # 初始化一个空 DataFrame
         df = pd.DataFrame(columns=REQUIRED_COLUMNS)
-        df.to_csv(PORTFOLIO_FILE, index=False)
+        df.to_csv(path, index=False)
         return df
     
     try:
-        df = pd.read_csv(PORTFOLIO_FILE)
+        df = pd.read_csv(path, dtype={"symbol": str})
         return normalize_portfolio(df)
     except Exception as e:
         logger.error(f"读取持仓文件失败: {e}", exc_info=True)

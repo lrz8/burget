@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from src.utils.trading_time import market_now
+
 
 def build_markdown_report(
     market_data: Dict[str, Any],
@@ -11,6 +13,7 @@ def build_markdown_report(
     session_type: str = "intraday",
     history_summary: Optional[Dict[str, Any]] = None,
     recent_trades: Optional[List[Dict[str, str]]] = None,
+    generated_at: Optional[datetime] = None,
 ) -> str:
     """组合结构化诊断结果，生成稳定可读的 Markdown 报告。"""
     market_section = _render_market_section(market_data, fund_flow, analysis["market"], session_type)
@@ -21,7 +24,7 @@ def build_markdown_report(
 
     sections = [
         f"# A股持仓诊断报告",
-        f"**生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}**",
+        f"**生成时间（上海）：{market_now(generated_at):%Y-%m-%d %H:%M:%S}**",
         f"**运行阶段：{_session_label(session_type)}**",
         "",
         market_section,
@@ -43,12 +46,13 @@ def build_daily_summary_report(
 ) -> str:
     lines = [
         "# A股日内跟踪总结",
-        f"**日期：{daily_summary.get('report_date', datetime.now().strftime('%Y-%m-%d'))}**",
+        f"**日期：{daily_summary.get('report_date', market_now().strftime('%Y-%m-%d'))}**",
         "",
         "## 当日概览",
         f"- 快照数量：{daily_summary.get('snapshot_count', 0)}",
         f"- 阶段覆盖：{', '.join(daily_summary.get('sessions', [])) or '暂无'}",
-        f"- 组合盈亏变化：{daily_summary.get('pnl_change', 0.0)} 元",
+        f"- 浮动盈亏变化：{daily_summary.get('pnl_change') if daily_summary.get('pnl_change') is not None else '不可计算'} 元",
+        "- 统计口径：仅比较快照浮动盈亏，不含已实现收益、交易费用及资金出入，不代表账户当日收益。",
         f"- 总结：{daily_summary.get('summary', '暂无。')}",
         "",
         "## 收盘动作清单",
@@ -98,7 +102,8 @@ def _render_market_section(
         for name, info in market_data.items():
             lines.append(
                 f"  - {name}：{info.get('最新价', 'N/A')}，"
-                f"涨跌 {info.get('涨跌额', 'N/A')}，涨跌幅 {info.get('涨跌幅(%)', 'N/A')}%"
+                f"涨跌 {info.get('涨跌额', 'N/A')}，涨跌幅 {info.get('涨跌幅(%)', 'N/A')}%，"
+                f"行情日期 {info.get('行情日期', '未知')}（日线）"
             )
     else:
         lines.append("- 主要指数：未获取到指数数据。")
@@ -127,6 +132,8 @@ def _render_positions_section(position_analysis: List[Dict[str, Any]], totals: D
         "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
 
+    if not totals.get("valuation_complete", True):
+        lines.insert(5, "- **估值不完整或行情过期：以上市值和浮盈亏仅为已获取数据的小计，不能视为完整组合估值。**")
     if not position_analysis:
         lines.append("| - | - | - | - | - | - | - | 暂无持仓或行情数据 |")
         return "\n".join(lines)
@@ -134,10 +141,14 @@ def _render_positions_section(position_analysis: List[Dict[str, Any]], totals: D
     for item in position_analysis:
         reason_text = " ".join(item["reasons"])
         lines.append(
-            f"| {item['symbol']} | {item['name']} | {item['latest_price']} | {item['buy_price']} | "
-            f"{item['day_pct']}% | {item['pnl_pct']}% | {item['action']} | {reason_text} |"
+            f"| {item['symbol']} | {item['name']} | {_display(item['latest_price'])} | {_display(item['buy_price'])} | "
+            f"{_display(item['day_pct'])}% | {_display(item['pnl_pct'])}% | {item['action']} | {reason_text} |"
         )
     return "\n".join(lines)
+
+
+def _display(value: Any) -> str:
+    return "—" if value is None else str(value)
 
 
 def _render_llm_section(llm_commentary: str) -> str:
@@ -145,7 +156,7 @@ def _render_llm_section(llm_commentary: str) -> str:
     if llm_commentary:
         lines.append(llm_commentary.strip())
     else:
-        lines.append("本次未启用 LLM 润色，以上结论完全基于规则引擎与结构化数据。")
+        lines.append("本次未生成 LLM 补充解读，以上结论基于规则引擎与结构化数据。")
     return "\n".join(lines)
 
 
@@ -193,7 +204,7 @@ def _session_label(session_type: str) -> str:
 def _session_hint(session_type: str) -> str:
     return {
         "pre_open": "基于开盘前可获得的上一交易日与最新资金数据，生成盘前预判。",
-        "intraday": "基于当前轮次抓取结果，生成盘中跟踪建议。",
+        "intraday": "当前数据为日线，仅作盘中观察；盘后确认后生成下一交易日条件预案。",
         "post_close": "基于收盘后数据和交易记录，生成盘后总结与次日预案。",
         "midday_break": "当前属于午间休市阶段，可用于回顾上午走势。",
         "off_hours": "当前处于非交易时段，结果更适合作为观察记录。",

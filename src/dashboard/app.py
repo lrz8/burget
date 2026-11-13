@@ -82,28 +82,42 @@ def main():
             submit_trade = st.form_submit_button("保存交易记录")
 
         if submit_trade and trade_symbol.strip():
-            record_trade(
-                symbol=trade_symbol.strip(),
-                name=trade_name.strip(),
-                side=trade_side,
-                quantity=int(trade_quantity),
-                price=float(trade_price),
-                note=trade_note.strip(),
-            )
-            st.success("✅ 交易记录已保存。")
+            try:
+                record_trade(
+                    symbol=trade_symbol.strip(),
+                    name=trade_name.strip(),
+                    side=trade_side,
+                    quantity=int(trade_quantity),
+                    price=float(trade_price),
+                    note=trade_note.strip(),
+                )
 
-        recent_trade_df = load_trade_log().sort_values("timestamp", ascending=False).head(5)
+            except (ValueError, OSError) as exc:
+                st.error(f"交易记录未保存：{exc}")
+            else:
+                st.success("✅ 交易记录已保存。")
+
+        try:
+            recent_trade_df = load_trade_log().sort_values("timestamp", ascending=False).head(5)
+        except (ValueError, OSError) as exc:
+            st.error(f"无法读取交易记录：{exc}")
+            st.stop()
         if not recent_trade_df.empty:
             st.dataframe(recent_trade_df, use_container_width=True, hide_index=True)
 
     analysis_result = None
     with st.spinner("正在刷新市场与持仓数据..."):
-        analysis_result = service.run(
-            portfolio_df=normalized_edited_df,
-            use_llm=False,
-            send_notification=False,
-            save_report=False,
-        )
+        try:
+            analysis_result = service.run(
+                portfolio_df=normalized_edited_df,
+                use_llm=False,
+                send_notification=False,
+                save_report=False,
+                save_snapshot=False,
+            )
+        except (ValueError, OSError) as exc:
+            st.error(f"无法生成诊断：{exc}")
+            st.stop()
 
     market_data = analysis_result["market_data"]
     stock_data = analysis_result["stock_data"]
@@ -114,7 +128,11 @@ def main():
 
     # --- 顶栏：大盘概览 ---
     st.header("📊 市场概览")
-    st.caption(f"当前阶段：{session_type}")
+    st.caption(f"当前阶段：{session_type}；日线数据，仅作观察或盘后预案。")
+    if analysis_result["position_source"] == "manual":
+        st.caption("持仓来源：手工维护。交易记录不会自动更新持仓，请同步维护左侧持仓表。")
+    else:
+        st.caption("持仓来源：交易账本。仓位由完整记录或明确的期初持仓推导，左侧手工持仓表不参与计算。")
     if market_data:
         cols = st.columns(len(market_data))
         for idx, (name, data) in enumerate(market_data.items()):
@@ -131,7 +149,7 @@ def main():
 
     # --- 中栏：盈亏速览与走势 ---
     st.header("🎯 持仓盈亏与近期走势")
-    if normalized_edited_df.empty:
+    if analysis_result["portfolio"].empty:
         st.warning("请先在左侧边栏添加你的监控持仓数据。")
     elif stock_data:
         df_display = []
@@ -158,6 +176,8 @@ def main():
             hide_index=True
         )
 
+        if not strategy_analysis["totals"]["valuation_complete"]:
+            st.warning("估值不完整或行情过期，组合数值仅为已获取数据的小计；缺失标的在诊断表中保留。")
         st.subheader("🧭 规则诊断结果")
         strategy_rows = []
         for item in strategy_analysis["positions"]:
@@ -166,7 +186,7 @@ def main():
                     "代码": item["symbol"],
                     "名称": item["name"],
                     "动作": item["action"],
-                    "信号强度": item["confidence"],
+                    "规则优先级": item["confidence"],
                     "理由": " ".join(item["reasons"]),
                 }
             )

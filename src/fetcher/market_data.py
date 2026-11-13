@@ -1,6 +1,11 @@
 import akshare as ak
 import logging
 import time
+from datetime import timedelta
+from functools import lru_cache
+from inspect import signature
+
+from src.utils.trading_time import market_now
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -20,6 +25,8 @@ def retry_akshare_call(func, *args, retries=3, delay=2, **kwargs):
 
 def _get_tx_symbol(symbol: str) -> str:
     """自动给代码加上 sh/sz 等前缀，适配腾讯接口"""
+    if symbol.startswith(("92", "8", "4")):
+        return f"bj{symbol}"
     if symbol.startswith(("6", "5", "9")):
         return f"sh{symbol}"
     elif symbol.startswith(("0", "3", "1")):
@@ -30,7 +37,7 @@ def _get_tx_symbol(symbol: str) -> str:
 
 def is_etf(symbol: str) -> bool:
     """根据代码判断是否是ETF基金"""
-    return symbol.startswith(("159", "510", "512", "562", "588", "1598"))
+    return symbol.startswith(("159", "51", "56", "58"))
 
 # 增加全局的 Name 缓存，避免每次循环都请求网络
 _STOCK_NAME_CACHE = {}
@@ -54,7 +61,15 @@ def get_symbol_name(symbol: str) -> str:
         logger.warning(f"获取名称缓存失败: {e}")
         return symbol
 
-def get_market_summary() -> Dict[str, Any]:
+def _volume_fields(latest) -> Dict[str, Any]:
+    # 旧版腾讯接口的 amount 实为成交量（手）；新版提供独立的 volume（股）和 amount（元）。
+    if "volume" in latest:
+        return {"成交量(股)": latest["volume"], "成交额(元)": latest.get("amount", "N/A")}
+    return {"成交量(手)": latest.get("amount", "N/A")}
+
+
+@lru_cache(maxsize=2)
+def _get_market_summary(bucket: int) -> Dict[str, Any]:
     """获取 A 股主要指数行情（使用无反爬限制的 Tencent 接口）"""
     logger.info("开始获取大盘指数数据...")
     target_indices = {
@@ -78,11 +93,13 @@ def get_market_summary() -> Dict[str, Any]:
                 pct_change = (change / prev_close) * 100
                 
                 summary[name] = {
+                    "行情日期": str(latest["date"])[:10],
+                    "数据周期": "daily",
+                    "数据来源": "Tencent",
                     "最新价": round(close, 2),
                     "涨跌额": round(change, 2),
                     "涨跌幅(%)": round(pct_change, 2),
-                    "成交量(手)": latest.get('amount', "N/A"),
-                    "成交额(元)": "N/A"
+                    **_volume_fields(latest)
                 }
         except Exception as e:
             logger.error(f"获取指数 {name} 数据失败: {e}")
@@ -90,7 +107,32 @@ def get_market_summary() -> Dict[str, Any]:
     logger.info(f"成功获取 {len(summary)} 个主要指数行情。")
     return summary
 
+def get_market_summary() -> Dict[str, Any]:
+    return {
+        name: info.copy()
+        for name, info in _get_market_summary(int(time.monotonic() // 60)).items()
+    }
+
+
 import pandas as pd
+
+@lru_cache(maxsize=128)
+def _cached_stock_history(symbol: str, start_date: str, end_date: str, bucket: int) -> pd.DataFrame:
+    kwargs = {"symbol": _get_tx_symbol(symbol), "start_date": start_date, "end_date": end_date}
+    if "timeout" in signature(ak.stock_zh_a_hist_tx).parameters:
+        kwargs["timeout"] = 10
+    return retry_akshare_call(ak.stock_zh_a_hist_tx, **kwargs)
+
+
+def _load_stock_history(symbol: str, days: int = 30) -> pd.DataFrame:
+    current = market_now()
+    return _cached_stock_history(
+        symbol,
+        (current.date() - timedelta(days=max(90, days * 2))).strftime("%Y%m%d"),
+        current.strftime("%Y%m%d"),
+        int(time.monotonic() // 60),
+    ).copy()
+
 
 def get_stock_data(portfolio_df: pd.DataFrame) -> Dict[str, Any]:
     """获取指定个股或ETF的最新行情，并结合持仓和买入价计算盈亏"""
@@ -104,8 +146,7 @@ def get_stock_data(portfolio_df: pd.DataFrame) -> Dict[str, Any]:
         buy_price = row.get("buy_price", 0.0)
         
         try:
-            tx_sym = _get_tx_symbol(symbol)
-            df = retry_akshare_call(ak.stock_zh_a_hist_tx, symbol=tx_sym)
+            df = _load_stock_history(symbol)
             if len(df) >= 2:
                 latest = df.iloc[-1]
                 prev = df.iloc[-2]
@@ -123,9 +164,12 @@ def get_stock_data(portfolio_df: pd.DataFrame) -> Dict[str, Any]:
                 stock_data[symbol] = {
                     "名称": get_symbol_name(symbol),
                     "类型": "ETF" if is_etf(symbol) else "股票",
-                    "最新价": round(close, 2),
+                    "行情日期": str(latest["date"])[:10],
+                    "数据周期": "daily",
+                    "数据来源": "Tencent",
+                    "最新价": round(close, 3),
                     "涨跌幅(%)": round(pct_change, 2),
-                    "成交额(元)": latest.get('amount', "N/A"),
+                    **_volume_fields(latest),
                     "持仓数量": holding_count,
                     "持仓成本价": buy_price,
                     "持仓市值(元)": round(holding_value, 2),
@@ -141,8 +185,7 @@ def get_stock_data(portfolio_df: pd.DataFrame) -> Dict[str, Any]:
 def get_stock_history_kline(symbol: str, days: int = 30) -> pd.DataFrame:
     """获取用于绘制曲线的历史 K 线数据"""
     try:
-        tx_sym = _get_tx_symbol(symbol)
-        df = retry_akshare_call(ak.stock_zh_a_hist_tx, symbol=tx_sym)
+        df = _load_stock_history(symbol, days)
         if not df.empty:
             df['date'] = pd.to_datetime(df['date'])
             return df.tail(days).reset_index(drop=True)
@@ -150,7 +193,8 @@ def get_stock_history_kline(symbol: str, days: int = 30) -> pd.DataFrame:
         logger.error(f"获取 {symbol} K线数据失败: {e}")
     return pd.DataFrame()
 
-def get_market_money_flow() -> Dict[str, Any]:
+@lru_cache(maxsize=2)
+def _get_market_money_flow(bucket: int) -> Dict[str, Any]:
     """获取大盘资金流向数据"""
     logger.info("开始获取市场资金流向数据...")
     try:
@@ -164,3 +208,7 @@ def get_market_money_flow() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"获取资金流向数据失败: {e}")
         return {}
+
+
+def get_market_money_flow() -> Dict[str, Any]:
+    return _get_market_money_flow(int(time.monotonic() // 60)).copy()
