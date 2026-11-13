@@ -36,7 +36,11 @@ class DashboardTest(unittest.TestCase):
             run = stack.enter_context(patch("src.service.monitor_service.MonitorService.run", return_value=result))
             app = AppTest.from_file("src/dashboard/app.py", default_timeout=15).run()
             self.assertEqual(len(app.exception), 0)
-            self.assertEqual(len(app.dataframe), 2)
+            holdings = next(item.value for item in app.dataframe if "持仓市值" in item.value.columns)
+            diagnostics = next(item.value for item in app.dataframe if "规则优先级" in item.value.columns)
+            self.assertEqual(holdings.iloc[0]["代码"], "600001")
+            self.assertEqual(holdings.iloc[0]["持仓市值"], 1000)
+            self.assertEqual(diagnostics.iloc[0]["动作"], "持仓观望")
             self.assertFalse(run.call_args.kwargs["save_snapshot"])
             self.assertFalse(run.call_args.kwargs["save_report"])
 
