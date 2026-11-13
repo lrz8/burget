@@ -3,6 +3,7 @@ import logging
 import time
 from datetime import timedelta
 from functools import lru_cache
+from inspect import signature
 
 from src.utils.trading_time import market_now
 from typing import Dict, Any, List
@@ -60,6 +61,13 @@ def get_symbol_name(symbol: str) -> str:
         logger.warning(f"获取名称缓存失败: {e}")
         return symbol
 
+def _volume_fields(latest) -> Dict[str, Any]:
+    # 旧版腾讯接口的 amount 实为成交量（手）；新版提供独立的 volume（股）和 amount（元）。
+    if "volume" in latest:
+        return {"成交量(股)": latest["volume"], "成交额(元)": latest.get("amount", "N/A")}
+    return {"成交量(手)": latest.get("amount", "N/A")}
+
+
 @lru_cache(maxsize=2)
 def _get_market_summary(bucket: int) -> Dict[str, Any]:
     """获取 A 股主要指数行情（使用无反爬限制的 Tencent 接口）"""
@@ -91,8 +99,7 @@ def _get_market_summary(bucket: int) -> Dict[str, Any]:
                     "最新价": round(close, 2),
                     "涨跌额": round(change, 2),
                     "涨跌幅(%)": round(pct_change, 2),
-                    "成交量(手)": latest.get('amount', "N/A"),
-                    "成交额(元)": "N/A"
+                    **_volume_fields(latest)
                 }
         except Exception as e:
             logger.error(f"获取指数 {name} 数据失败: {e}")
@@ -111,10 +118,10 @@ import pandas as pd
 
 @lru_cache(maxsize=128)
 def _cached_stock_history(symbol: str, start_date: str, end_date: str, bucket: int) -> pd.DataFrame:
-    return retry_akshare_call(
-        ak.stock_zh_a_hist_tx, symbol=_get_tx_symbol(symbol),
-        start_date=start_date, end_date=end_date, timeout=10,
-    )
+    kwargs = {"symbol": _get_tx_symbol(symbol), "start_date": start_date, "end_date": end_date}
+    if "timeout" in signature(ak.stock_zh_a_hist_tx).parameters:
+        kwargs["timeout"] = 10
+    return retry_akshare_call(ak.stock_zh_a_hist_tx, **kwargs)
 
 
 def _load_stock_history(symbol: str, days: int = 30) -> pd.DataFrame:
@@ -162,7 +169,7 @@ def get_stock_data(portfolio_df: pd.DataFrame) -> Dict[str, Any]:
                     "数据来源": "Tencent",
                     "最新价": round(close, 3),
                     "涨跌幅(%)": round(pct_change, 2),
-                    "成交量(手)": latest.get('amount', "N/A"),
+                    **_volume_fields(latest),
                     "持仓数量": holding_count,
                     "持仓成本价": buy_price,
                     "持仓市值(元)": round(holding_value, 2),
